@@ -1,6 +1,7 @@
 '''Common defense methods.'''
 import torch
-
+from numpy.linalg import eigh
+from scipy.optimize import minimize
 
 class SimData(torch.utils.data.Dataset):
     """Torch dataset for data loader."""
@@ -200,3 +201,24 @@ class Overfit(Defense):
         self.y = torch.vstack(self.y).detach()
         self.y = self._scale(self.y)
         self.true_target = torch.hstack(self.true_target)
+
+
+def sol(m, u):
+    """Solve the best perturbation direction."""
+    def obj(x):
+        """Objective function"""
+        return -x @ m @ x - u @ x
+
+    def jac(x):
+        """Jacobian of the objective"""
+        return -2 * m @ x - u
+
+    def con1(x):
+        """Constraint"""
+        return x @ x - 1
+
+    cons = [{'type': 'eq', 'fun': con1}]
+    x0 = eigh(m)[1][:, 0]  # initial guess
+    solution = minimize(obj, x0, jac=jac, constraints=cons)
+    x = solution.x
+    return x

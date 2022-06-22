@@ -10,7 +10,7 @@ We develop a new statistical notion of model privacy to study the model stealing
 
 ## Installation
 
-### Pre-requirements
+### Prerequisites
 See `requirements.txt`.
 
 

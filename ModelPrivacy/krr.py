@@ -1,7 +1,7 @@
 """Example of kernel ridge regression."""
+from utils import *
 import numpy as np
-from numpy.linalg import norm, pinv, eigh
-from scipy.optimize import minimize
+from numpy.linalg import norm, pinv
 from sklearn.kernel_ridge import KernelRidge
 from sklearn.metrics.pairwise import pairwise_kernels
 from sklearn.metrics import mean_squared_error
@@ -10,27 +10,6 @@ from sklearn.metrics import mean_squared_error
 def f(x):
     """Target function."""
     return x-1.2*x**2-0.8*x**3+0.6*np.cos(2*np.pi*x)
-
-
-def sol(m, u):
-    """Solve the best perturbation direction."""
-    def obj(x):
-        """Objective function"""
-        return -x @ m @ x - u @ x
-
-    def jac(x):
-        """Jacobian of the objective"""
-        return -2 * m @ x - u
-
-    def con1(x):
-        """Constraint"""
-        return x @ x - 1
-
-    cons = [{'type': 'eq', 'fun': con1}]
-    x0 = eigh(m)[1][:, 0]  # initial guess
-    solution = minimize(obj, x0, jac=jac, constraints=cons)
-    x = solution.x
-    return x
 
 
 # Compare three defense machanisms
