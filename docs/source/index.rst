@@ -6,15 +6,36 @@
 Welcome to ModelPrivacy's documentation!
 ========================================
 
+Installation
+------------
+
+**Build from source**
+
+.. code-block:: bash
+
+	$ git clone https://github.com/KeyWgh/ModelPrivacy.git
+	$ cd ModelPrivacy
+	$ python setup.py install
+
+**Prerequisites**
+
+See *requirements.txt*.
+
+Getting started with examples
+-----------------------------
+
+Kernel ridge regression: krr.py
+
+Neural networks on MNIST: nn.py
+
+API reference
+-------------
+
+:doc:`API <module/api>`
+
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+   :maxdepth: 1
+   :hidden:
+   :caption: API reference:
 
-
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+   module/api

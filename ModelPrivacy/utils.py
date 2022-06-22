@@ -17,22 +17,22 @@ class SimData(torch.utils.data.Dataset):
 
 
 class Defense:
-    """Base defense class for classification task."""
+    """Base defense class for classification task.
+
+    Parameters
+    ----------
+    dataloader : torch.utils.data.Dataset
+        Dataset loader.
+    teacher : function
+        Teacher model.
+    device : str
+        CPU or GPU device used for training.
+    tol : float
+        Clip the probability to [tol, 1-tol].
+    add : bool
+        Add the generated perturbation or not.
+    """
     def __init__(self, dataloader, teacher, device='cpu', tol=1e-10, add=True):
-        """
-        Parameters
-        ----------
-        dataloader : torch.utils.data.Dataset
-            Dataset loader.
-        teacher : function
-            Teacher model.
-        device : str
-            CPU or GPU device used for training.
-        tol : float
-            Clip the probability to [tol, 1-tol].
-        add : bool
-            Add the generated perturbation or not.
-        """
         self.data = []  # retrieve the predictors of the training sample
         self.target = []  # retrieve the outcome of the teacher model
         self.true_target = []  # retrieve the outcome of the training sample
@@ -59,6 +59,7 @@ class Defense:
 
     def sample(self, n=None, batch_size=128, type='defended'):
         """Sample the dataset.
+
         Parameters
         ----------
         n : int
@@ -96,14 +97,14 @@ class Defense:
 
 
 class RandomNoise(Defense):
-    """Add random Gaussian noise."""
+    """Add random Gaussian noise.
+
+    Parameters
+    ----------
+    sigma : float
+        Variance of the Gaussian distribution.
+    """
     def __init__(self, sigma=0.1, *args, **kwargs):
-        """
-        Parameters
-        ----------
-        sigma : float
-            Variance of the Gaussian distribution.
-        """
         self.sigma = sigma
         super().__init__(*args, **kwargs)
 
@@ -113,16 +114,16 @@ class RandomNoise(Defense):
 
 
 class DeceptiveNoise(Defense):
-    """Add deceptive noise."""
+    """Add deceptive noise.
+
+    Parameters
+    ----------
+    sigma : float
+        Range of noise.
+    beta : float
+        Scale of noise.
+    """
     def __init__(self, gamma=0.1, beta=1, *args, **kwargs):
-        """
-        Parameters
-        ----------
-        sigma : float
-            Range of noise.
-        beta : float
-            Scale of noise.
-        """
         self.gamma = gamma
         self.beta = beta
         super().__init__(*args, **kwargs)
@@ -137,18 +138,19 @@ class DeceptiveNoise(Defense):
 
 
 class AdaptiveNoise(Defense):
-    """Add adaptive noise."""
+    """Add adaptive noise.
+
+    Parameters
+    ----------
+    mis_model : function
+        The mis-specified model that determines noise.
+    tau : float
+        Threshold for suspicious inputs.
+    nu : float
+        Scale of noise.
+    """
     def __init__(self, mis_model, tau=0.8, nu=-1000, *args, **kwargs):
-        """
-        Parameters
-        ----------
-        mis_model : function
-            The mis-specified model that determines noise.
-        tau : float
-            Threshold for suspicious inputs.
-        nu : float
-            Scale of noise.
-        """
+
         self.tau = tau
         self.nu = nu
         super().__init__(add=False, *args, **kwargs)
