@@ -24,9 +24,17 @@ See *requirements.txt*.
 Getting started with examples
 -----------------------------
 
-Kernel ridge regression: krr.py
+Neural networks on MNIST
 
-Neural networks on MNIST: nn.py
+:doc:`Vignette <vignette>`
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+   :caption: Getting started:
+
+   vignette
+
 
 API reference
 -------------

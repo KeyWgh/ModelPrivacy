@@ -1,5 +1,5 @@
 """Example of kernel ridge regression."""
-from utils import *
+from .utils import *
 import numpy as np
 from numpy.linalg import norm, pinv
 from sklearn.kernel_ridge import KernelRidge
@@ -12,7 +12,7 @@ def f(x):
     return x-1.2*x**2-0.8*x**3+0.6*np.cos(2*np.pi*x)
 
 
-# Compare three defense machanisms
+# Compare three defense mechanisms
 nrep = 1
 res_kr = np.zeros((nrep, 3))
 ans = np.zeros(nrep)

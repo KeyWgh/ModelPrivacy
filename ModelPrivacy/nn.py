@@ -1,11 +1,11 @@
-from utils import *
+"""Example of neural networks on MNIST."""
+from .utils import *
 import numpy as np
 from numpy.linalg import norm, pinv
 from collections import defaultdict
 
 import torchvision
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.utils.data
 import torchvision.datasets as datasets
 
@@ -83,7 +83,7 @@ class LeNet5(nn.Module):
         return x
 
 
-def train(model, train_loader, criterion, optimizer):
+def train(model, train_loader, criterion, optimizer, device):
     """Training for one epoch."""
     train_loss = 0
     model.train(True)
@@ -97,7 +97,7 @@ def train(model, train_loader, criterion, optimizer):
     return train_loss / len(train_loader)
 
 
-def test(model, test_loader, criterion):
+def test(model, test_loader, criterion, device):
     """Test error on the test dataset given a trained model."""
     model.train(False)
     test_loss = 0
@@ -143,15 +143,16 @@ def cal_an(m, n, loss, type='teacher'):
     return loss(m.y[:n], m.target[:n]).item() if type == 'teacher' else loss(m.y[:n], m.true_target[:n].to(device)).item()
 
 
-def run(train_loader, test_loader, model, criterion = CELoss, criterion2 = myCustomLoss, lr=0.001, num_epochs=100, verbose=True):
+def run(train_loader, test_loader, model, criterion = CELoss, criterion2 = myCustomLoss, lr=0.001, num_epochs=100,
+        device='cpu', verbose=True):
     """Model training procedure."""
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     # optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0, weight_decay=0)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10], gamma=0.5)
     qtl = num_epochs // 10
     for epoch in range(1, num_epochs + 1):
-        train_loss = train(model, train_loader, criterion, optimizer)
-        test_loss = test(model, test_loader, criterion2)
+        train_loss = train(model, train_loader, criterion, optimizer, device=device)
+        test_loss = test(model, test_loader, criterion2, device=device)
         scheduler.step()
         if (epoch % qtl == 0) & verbose:
             print('Train({})[{:.0f}%]: Loss: {:.4f}; Test error:{:.4f}'.format(
@@ -169,127 +170,128 @@ def teacherMSELoss(my_outputs, targets):
 
 # The data is converted to range [0, 1], and select categories 1 and 7 only.
 # Change data path accordingly!
-transform = torchvision.transforms.ToTensor()
-mnist_trainset0 = datasets.MNIST(root='./data', train=True, download=False, transform=transform)
-idx = torch.logical_or(mnist_trainset0.targets==1, mnist_trainset0.targets==7)
-mnist_trainset0.data = mnist_trainset0.data[idx]
-mnist_trainset0.targets = (mnist_trainset0.targets[idx]).apply_(recode)
+if __name__ == '__main__':
+    transform = torchvision.transforms.ToTensor()
+    mnist_trainset0 = datasets.MNIST(root='./data', train=True, download=False, transform=transform)
+    idx = torch.logical_or(mnist_trainset0.targets==1, mnist_trainset0.targets==7)
+    mnist_trainset0.data = mnist_trainset0.data[idx]
+    mnist_trainset0.targets = (mnist_trainset0.targets[idx]).apply_(recode)
 
-mnist_testset = datasets.MNIST(root='./data', train=False, download=False, transform=transform)
-idx = torch.logical_or(mnist_testset.targets==1, mnist_testset.targets==7)
-mnist_testset.data = mnist_testset.data[idx]
-mnist_testset.targets = (mnist_testset.targets[idx]).apply_(recode)
+    mnist_testset = datasets.MNIST(root='./data', train=False, download=False, transform=transform)
+    idx = torch.logical_or(mnist_testset.targets==1, mnist_testset.targets==7)
+    mnist_testset.data = mnist_testset.data[idx]
+    mnist_testset.targets = (mnist_testset.targets[idx]).apply_(recode)
 
-batch_size = 128
+    batch_size = 128
 
-torch.set_default_dtype(torch.float64)
-device = 'cpu'
-nrep = 1
-res_nn = []
-ans = np.zeros(nrep)
-methods = ['W/O', 'RN', 'DP', 'AM', 'Our']
-emp = 1000
-ntest = 1000
-# Compare some defense mechanisms
-for i in range(nrep):
-    # Split training and test
-    mnist_trainset, valid = torch.utils.data.random_split(mnist_trainset0, (5000, 8007))
-    trainloader = torch.utils.data.DataLoader(mnist_trainset, batch_size=batch_size, shuffle=True)
-    testloader = torch.utils.data.DataLoader(mnist_testset, batch_size=batch_size, shuffle=True)
+    torch.set_default_dtype(torch.float64)
+    device = 'cpu'
+    nrep = 1
+    res_nn = []
+    ans = np.zeros(nrep)
+    methods = ['W/O', 'RN', 'DP', 'AM', 'Our']
+    emp = 1000
+    ntest = 1000
+    # Compare some defense mechanisms
+    for i in range(nrep):
+        # Split training and test
+        mnist_trainset, valid = torch.utils.data.random_split(mnist_trainset0, (5000, 8007))
+        trainloader = torch.utils.data.DataLoader(mnist_trainset, batch_size=batch_size, shuffle=True)
+        testloader = torch.utils.data.DataLoader(mnist_testset, batch_size=batch_size, shuffle=True)
 
-    # Teacher model
-    train_loss, test_loss, teacher = run(trainloader, testloader, LeNet5(1).to(device),
-                                         criterion=teacherMSELoss, num_epochs=50,
-                                         verbose=False)
+        # Teacher model
+        train_loss, test_loss, teacher = run(trainloader, testloader, LeNet5(1).to(device),
+                                             criterion=teacherMSELoss, num_epochs=50,
+                                             verbose=False)
 
-    df = {method: defaultdict(list) for method in methods}
-    df['Teacher'] = {'MSE': test(teacher, testloader, teacherMSELoss), '01': test(teacher, testloader, myCustomLoss)}
-    n = 100
+        df = {method: defaultdict(list) for method in methods}
+        df['Teacher'] = {'MSE': test(teacher, testloader, teacherMSELoss), '01': test(teacher, testloader, myCustomLoss)}
+        n = 100
 
-    # Query data
-    valid2 = torch.utils.data.Subset(mnist_trainset0, valid.indices[:3000])
-    validloader = torch.utils.data.DataLoader(valid2, batch_size=batch_size, shuffle=True)
-    mt = Defense(testloader, teacher, device=device, add=False)
-    ttloader = torch.utils.data.DataLoader(SimData(mt.data, mt.target),
-                                           batch_size=batch_size, shuffle=True)
+        # Query data
+        valid2 = torch.utils.data.Subset(mnist_trainset0, valid.indices[:3000])
+        validloader = torch.utils.data.DataLoader(valid2, batch_size=batch_size, shuffle=True)
+        mt = Defense(testloader, teacher, device=device, add=False)
+        ttloader = torch.utils.data.DataLoader(SimData(mt.data, mt.target),
+                                               batch_size=batch_size, shuffle=True)
 
-    m = Defense(validloader, teacher, device=device, add=False)
-    trainloader = m.sample(n)
+        m = Defense(validloader, teacher, device=device, add=False)
+        trainloader = m.sample(n)
 
-    data = m.data
-    target = m.target
-    training_data = data[:n]
-    training_target = target[:n]
+        data = m.data
+        target = m.target
+        training_data = data[:n]
+        training_target = target[:n]
 
-    net = LeNet5(1)
-    grad_list = []
-    for idx in range(n):
-        val = net(training_data[idx][None, :])
-        grad_list.append(torch.autograd.grad(val, net.parameters(), create_graph=True))
-    ker = gram(grad_list)
+        net = LeNet5(1)
+        grad_list = []
+        for idx in range(n):
+            val = net(training_data[idx][None, :])
+            grad_list.append(torch.autograd.grad(val, net.parameters(), create_graph=True))
+        ker = gram(grad_list)
 
-    emp_grad_list = []
-    for idx in range(emp):
-        val = net(torch.Tensor(data[n+idx][None, :]))
-        emp_grad_list.append(torch.autograd.grad(val, net.parameters(), create_graph=True))
+        emp_grad_list = []
+        for idx in range(emp):
+            val = net(torch.Tensor(data[n+idx][None, :]))
+            emp_grad_list.append(torch.autograd.grad(val, net.parameters(), create_graph=True))
 
-    emp_ker = gram(grad_list, emp_grad_list)
-    alpha = 0.0
-    ik = pinv(ker+alpha*np.identity(n))
-    eker = emp_ker @ emp_ker.T / emp
-    mker = ik.T @ eker @ ik
-    ey = emp_ker @ target[n:n+emp].numpy() / emp
-    u = training_target.numpy() @ mker - ik @ ey
+        emp_ker = gram(grad_list, emp_grad_list)
+        alpha = 0.0
+        ik = pinv(ker+alpha*np.identity(n))
+        eker = emp_ker @ emp_ker.T / emp
+        mker = ik.T @ eker @ ik
+        ey = emp_ker @ target[n:n+emp].numpy() / emp
+        u = training_target.numpy() @ mker - ik @ ey
 
-    new_grad_list = []
-    for _ in range(ntest):
-        val = net(torch.Tensor(mt.data[_]))
-        new_grad_list.append(torch.autograd.grad(val, net.parameters(), create_graph=True))
+        new_grad_list = []
+        for _ in range(ntest):
+            val = net(torch.Tensor(mt.data[_]))
+            new_grad_list.append(torch.autograd.grad(val, net.parameters(), create_graph=True))
 
-    pred_ker = gram(grad_list, new_grad_list)
+        pred_ker = gram(grad_list, new_grad_list)
 
-    # No noise
-    pred_nn = training_target@ik@pred_ker
-    df['W/O']['CE_an_teacher'].append(cal_an(m, n, nn.MSELoss()))
-    df['W/O']['01_an_teacher'].append(cal_an(m, n, myCustomLoss))
-    df['W/O']['CE_an_origin'].append(cal_an(mt, n, teacherMSELoss, 'origin'))
-    df['W/O']['01_an_origin'].append(cal_an(mt, n, myCustomLoss, 'origin'))
-    df['W/O']['CE_bn_origin'].append(teacherMSELoss(pred_nn, mt.true_target[:ntest]).item())
-    df['W/O']['01_bn_origin'].append(myCustomLoss(pred_nn, mt.true_target[:ntest]).item())
-    df['W/O']['CE_bn_teacher'].append(nn.MSELoss()(pred_nn, mt.target[:ntest]).item())
-    df['W/O']['01_bn_teacher'].append(myCustomLoss(pred_nn, mt.target[:ntest]).item())
+        # No noise
+        pred_nn = training_target@ik@pred_ker
+        df['W/O']['CE_an_teacher'].append(cal_an(m, n, nn.MSELoss()))
+        df['W/O']['01_an_teacher'].append(cal_an(m, n, myCustomLoss))
+        df['W/O']['CE_an_origin'].append(cal_an(mt, n, teacherMSELoss, 'origin'))
+        df['W/O']['01_an_origin'].append(cal_an(mt, n, myCustomLoss, 'origin'))
+        df['W/O']['CE_bn_origin'].append(teacherMSELoss(pred_nn, mt.true_target[:ntest]).item())
+        df['W/O']['01_bn_origin'].append(myCustomLoss(pred_nn, mt.true_target[:ntest]).item())
+        df['W/O']['CE_bn_teacher'].append(nn.MSELoss()(pred_nn, mt.target[:ntest]).item())
+        df['W/O']['01_bn_teacher'].append(myCustomLoss(pred_nn, mt.target[:ntest]).item())
 
-    # Random Gaussian noise
-    sigma = 0.4
-    training_noise_target = training_target+torch.normal(0, sigma, size=training_target.shape, device=device)
-    an = nn.MSELoss()(training_noise_target, training_target).item()
-    ans[i] = an
-    pred_nn = training_noise_target @ ik @ pred_ker
-    method = 'RN'
-    df[method] = defaultdict(list)
-    df[method]['CE_an_teacher'].append(an)
-    df[method]['01_an_teacher'].append(myCustomLoss(training_noise_target, m.target[:n]).item())
-    df[method]['CE_an_origin'].append(teacherMSELoss(training_noise_target, m.true_target[:n]).item())
-    df[method]['01_an_origin'].append(myCustomLoss(training_noise_target, m.true_target[:n]).item())
-    df[method]['CE_bn_origin'].append(teacherMSELoss(pred_nn, mt.true_target[:ntest]).item())
-    df[method]['01_bn_origin'].append(myCustomLoss(pred_nn, mt.true_target[:ntest]).item())
-    df[method]['CE_bn_teacher'].append(nn.MSELoss()(pred_nn, mt.target[:ntest]).item())
-    df[method]['01_bn_teacher'].append(myCustomLoss(pred_nn, mt.target[:ntest]).item())
+        # Random Gaussian noise
+        sigma = 0.4
+        training_noise_target = training_target+torch.normal(0, sigma, size=training_target.shape, device=device)
+        an = nn.MSELoss()(training_noise_target, training_target).item()
+        ans[i] = an
+        pred_nn = training_noise_target @ ik @ pred_ker
+        method = 'RN'
+        df[method] = defaultdict(list)
+        df[method]['CE_an_teacher'].append(an)
+        df[method]['01_an_teacher'].append(myCustomLoss(training_noise_target, m.target[:n]).item())
+        df[method]['CE_an_origin'].append(teacherMSELoss(training_noise_target, m.true_target[:n]).item())
+        df[method]['01_an_origin'].append(myCustomLoss(training_noise_target, m.true_target[:n]).item())
+        df[method]['CE_bn_origin'].append(teacherMSELoss(pred_nn, mt.true_target[:ntest]).item())
+        df[method]['01_bn_origin'].append(myCustomLoss(pred_nn, mt.true_target[:ntest]).item())
+        df[method]['CE_bn_teacher'].append(nn.MSELoss()(pred_nn, mt.target[:ntest]).item())
+        df[method]['01_bn_teacher'].append(myCustomLoss(pred_nn, mt.target[:ntest]).item())
 
-    # Proposed best perturbation
-    e = sol(mker, 2 * u)
-    e = np.sqrt(n * an) * e / norm(e)
-    training_noise_target = training_target + torch.Tensor(e)
-    pred_nn = training_noise_target @ ik @ pred_ker
-    method = 'Our'
-    df[method] = defaultdict(list)
-    df[method]['CE_an_teacher'].append(an)
-    df[method]['01_an_teacher'].append(myCustomLoss(training_noise_target, m.target[:n]).item())
-    df[method]['CE_an_origin'].append(teacherMSELoss(training_noise_target, m.true_target[:n]).item())
-    df[method]['01_an_origin'].append(myCustomLoss(training_noise_target, m.true_target[:n]).item())
-    df[method]['CE_bn_origin'].append(teacherMSELoss(pred_nn, mt.true_target[:ntest]).item())
-    df[method]['01_bn_origin'].append(myCustomLoss(pred_nn, mt.true_target[:ntest]).item())
-    df[method]['CE_bn_teacher'].append(nn.MSELoss()(pred_nn, mt.target[:ntest]).item())
-    df[method]['01_bn_teacher'].append(myCustomLoss(pred_nn, mt.target[:ntest]).item())
+        # Proposed best perturbation
+        e = sol(mker, 2 * u)
+        e = np.sqrt(n * an) * e / norm(e)
+        training_noise_target = training_target + torch.Tensor(e)
+        pred_nn = training_noise_target @ ik @ pred_ker
+        method = 'Our'
+        df[method] = defaultdict(list)
+        df[method]['CE_an_teacher'].append(an)
+        df[method]['01_an_teacher'].append(myCustomLoss(training_noise_target, m.target[:n]).item())
+        df[method]['CE_an_origin'].append(teacherMSELoss(training_noise_target, m.true_target[:n]).item())
+        df[method]['01_an_origin'].append(myCustomLoss(training_noise_target, m.true_target[:n]).item())
+        df[method]['CE_bn_origin'].append(teacherMSELoss(pred_nn, mt.true_target[:ntest]).item())
+        df[method]['01_bn_origin'].append(myCustomLoss(pred_nn, mt.true_target[:ntest]).item())
+        df[method]['CE_bn_teacher'].append(nn.MSELoss()(pred_nn, mt.target[:ntest]).item())
+        df[method]['01_bn_teacher'].append(myCustomLoss(pred_nn, mt.target[:ntest]).item())
 
-    res_nn.append(df)
+        res_nn.append(df)

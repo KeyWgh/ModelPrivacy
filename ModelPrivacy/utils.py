@@ -2,6 +2,8 @@
 import torch
 from numpy.linalg import eigh
 from scipy.optimize import minimize
+import torch.nn.functional as F
+
 
 class SimData(torch.utils.data.Dataset):
     """Torch dataset for data loader."""
