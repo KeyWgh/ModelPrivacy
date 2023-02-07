@@ -5,6 +5,11 @@ import torch.nn.functional as F
 import torch
 from abc import ABC, abstractmethod
 from colorednoise import powerlaw_psd_gaussian
+from sklearn.metrics.pairwise import pairwise_kernels
+from numpy.linalg import norm, pinv
+import logging
+from .attack import get_query
+logger = logging.getLogger(__name__)
 
 
 class SimData(torch.utils.data.Dataset):
@@ -128,7 +133,7 @@ class DefenseClassfication(Defense):
     """
     def __init__(self, *args, tol=1e-10, **kwargs):
         self.tol = tol
-        super().__init__()
+        super().__init__(*args, **kwargs)
 
     def respond(self, x, y):
         self._scale(self._clip(self.add_noise(x, y), self.tol))
@@ -160,10 +165,10 @@ class DefenseRegression(Defense):
     add : bool
         Add the generated perturbation or not.
     """
-    def __init__(self, x, y, *args, lb=-np.inf, ub=np.inf, **kwargs):
+    def __init__(self, *args, lb=-np.inf, ub=np.inf, **kwargs):
         self.lb = lb
         self.ub = ub
-        super().__init__(x, y)
+        super().__init__(*args, **kwargs)
 
     def respond(self, x, y):
         return self._clip(self.add_noise(x, y), self.lb, self.ub)
@@ -224,10 +229,11 @@ class LongRangeNoise(DefenseRegression):
         super().__init__(*args, **kwargs)
 
     def add_noise(self, x, y):
-        noise = powerlaw_psd_gaussian(1-self.gamma, y.shape)
+        # TODO: generate correlated noise for sequential query.
+        noise = powerlaw_psd_gaussian(1-self.gamma, y.shape) if y.shape != (1,) else np.random.normal(0, 1, size=y.shape)
         if len(x.shape) == 1:
             noise = noise[np.argsort(x)]  # sort noise by values of x
-        return y + noise
+        return y + noise*self.sigma
 
 
 class Truth(Defense):
@@ -342,6 +348,32 @@ def sol(m, u):
     return x
 
 
+class KRRNoise(DefenseRegression):
+    def __init__(self, sigma=0.1, model=None, *args, **kwargs):
+        self.sigma = sigma
+        self.model = model
+        self.emp = kwargs.get('emp', 3000)
+        self.query_strategy = kwargs.get('query_strategy', 'IID')
+        self.query_kwargs = kwargs.get('query_kwargs', {})
+        self.newx = get_query(self.query_strategy, **self.query_kwargs).gen_query(self.emp)
+        super().__init__(*args, **kwargs)
+
+    def add_noise(self, x, y):
+        n = len(y)
+        x = x.reshape(-1, 1) if len(x.shape) == 1 else x
+        emp = self.emp
+        ker = pairwise_kernels(x, metric=self.kwargs['kernel'])
+        ik = pinv(ker + self.kwargs['alpha'] * np.identity(n))
+        pred_ker = pairwise_kernels(x, self.newx.reshape(-1, 1), metric=self.kwargs['kernel'])
+        ey = pred_ker @ self.model(self.newx) / emp
+        eker = pred_ker @ pred_ker.T / emp
+        m = ik.T @ eker @ ik
+        u = y @ m - ik @ ey
+        e = sol(m, 2 * u)
+        e = e / norm(e)
+        return y + e * self.sigma * np.sqrt(n)
+
+
 def sigmoid(x):
     """Sigmoid function."""
     return 1 / (1 + np.exp(-x))
@@ -352,6 +384,12 @@ def get_defense(method_name, *args, **kwargs):
         defender = Truth(*args, **kwargs)
     elif method_name == 'RandomNoiseClassficiation':
         defender = RandomNoiseClf(*args, **kwargs)
+    elif method_name == 'RandomNoiseRegression':
+        defender = RandomNoiseReg(*args, **kwargs)
+    elif method_name == 'LongRangeNoise':
+        defender = LongRangeNoise(*args, **kwargs)
+    elif method_name == 'KRR':
+        defender = KRRNoise(*args, **kwargs)
     else:
         raise ValueError("Invalid defender.")
     return defender
