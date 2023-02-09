@@ -1,13 +1,24 @@
 """Example of neural networks on MNIST."""
-from .utils import *
 import numpy as np
-from numpy.linalg import norm, pinv
-from collections import defaultdict
-
-import torchvision
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.utils.data
-import torchvision.datasets as datasets
+import logging
+logger = logging.getLogger(__name__)
+
+
+class SimData(torch.utils.data.Dataset):
+    """Torch dataset for data loader."""
+    def __init__(self, X, y):
+        self.X = X
+        self.y = y
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx, :], self.y[idx]
 
 
 class LinearNeuralTangentKernel(nn.Linear):
@@ -32,43 +43,10 @@ class LinearNeuralTangentKernel(nn.Linear):
         )
 
 
-def gram(grad_list, Y=None):
-    """Calculate the gram matrix from the neural network.
-    Parameters
-    ----------
-    grad_list : List
-        List of gradients for each layer.
-    Y : None or List
-        None then same as grad_list.
-
-    Returns
-    -------
-    numpy.ndarray
-    """
-    n = len(grad_list)
-    m = n if Y is None else len(Y)
-    gram = np.zeros((n, m))
-    for i in range(n):
-        u = grad_list[i]
-        for j in range(m):
-            if j < i and Y is None:
-                gram[i, j] = gram[j, i]
-            else:
-                v = Y[j] if Y else grad_list[j]
-                gram[i, j] = np.sum(list(map(lambda x: torch.sum(x[0]*x[1]).item(), zip(u, v))))
-    return gram
-
-
-def recode(x):
-    """Turn MNIST to a binary classification task by choosing label 1 and 7."""
-    return 1 if x == 7 else 0
-    # return x
-
-
-class LeNet5(nn.Module):
+class LeNet5NTK(nn.Module):
     """LeNet."""
     def __init__(self, n_classes=1):
-        super(LeNet5, self).__init__()
+        super(LeNet5NTK, self).__init__()
 
         self.feature_extractor = nn.Sequential(
             LinearNeuralTangentKernel(in_features=28 * 28, out_features=200),
@@ -83,6 +61,36 @@ class LeNet5(nn.Module):
         return x
 
 
+class LeNet5(nn.Module):
+    # require 32*32 pixels
+    def __init__(self, n_classes):
+        super(LeNet5, self).__init__()
+
+        self.feature_extractor = nn.Sequential(
+            nn.Conv2d(in_channels=1, out_channels=6, kernel_size=5, stride=1),
+            nn.Tanh(),
+            nn.AvgPool2d(kernel_size=2),
+            nn.Conv2d(in_channels=6, out_channels=16, kernel_size=5, stride=1),
+            nn.Tanh(),
+            nn.AvgPool2d(kernel_size=2),
+            nn.Conv2d(in_channels=16, out_channels=120, kernel_size=5, stride=1),
+            nn.Tanh()
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(in_features=120, out_features=84),
+            nn.Tanh(),
+            nn.Linear(in_features=84, out_features=n_classes),
+        )
+
+    def forward(self, x):
+        x = self.feature_extractor(x)
+        x = torch.flatten(x, 1)
+        logits = self.classifier(x)
+        probs = F.softmax(logits, dim=1)
+        return probs
+
+
 def train(model, train_loader, criterion, optimizer, device):
     """Training for one epoch."""
     train_loss = 0
@@ -90,7 +98,7 @@ def train(model, train_loader, criterion, optimizer, device):
     for batch_idx, (data, target) in enumerate(train_loader):
         optimizer.zero_grad()  # Initialize grad
         output = model(data.to(device))  # feed model
-        loss = criterion(output.squeeze(), target.squeeze().to(device))   # calculate loss
+        loss = criterion(output, target.to(device))   # calculate loss
         loss.backward()  # back propagation
         optimizer.step()  # update parameters
         train_loss += loss.item()  # sum up training loss
@@ -104,58 +112,63 @@ def test(model, test_loader, criterion, device):
     with torch.no_grad():
         for data, target in test_loader:
             output = model(data.to(device))
-            test_loss += criterion(output.squeeze(), target.squeeze().to(device)).item()  # sum up batch loss
+            test_loss += criterion(output, target.to(device)).item()  # sum up batch loss
     test_loss = test_loss / len(test_loader)
     return test_loss
 
 
-def myCustomLoss(my_outputs, my_labels):
+def zero_one_loss_binary(my_outputs, my_labels, threshold=0.5):
     """Mis-classification error."""
+    # Y should be a tensor of size (batch_size, 1)
     # specifying the batch size
     my_batch_size = my_outputs.size()[0]
-
-    my_outputs = my_outputs > 0
-    my_labels = my_labels > 0
+    my_outputs = my_outputs > threshold
+    my_labels = my_labels > threshold
     # return the results
     return torch.sum(my_outputs != my_labels)/my_batch_size
 
-# def myCustomLoss(my_outputs, my_labels):
-#     '''Misclassification error.'''
-#     #specifying the batch size
-#     my_batch_size = my_outputs.size()[0]
-#
-#     my_outputs = my_outputs > 0.5
-#     my_labels = my_labels > 0.5
-#     #returning the results
-#     return torch.sum(my_outputs != my_labels).item()/my_batch_size
+
+def zero_one_loss(my_outputs: torch.Tensor, my_labels: torch.Tensor):
+    """Mis-classification error."""
+    my_batch_size = my_outputs.size()[0]
+    my_outputs = my_outputs.argmax(dim=1)
+    my_labels = my_labels.argmax(dim=1) if my_labels.ndim > 1 else my_labels
+    return torch.sum(my_outputs != my_labels)/my_batch_size
 
 
-def CELoss(my_outputs, targets):
+def CELoss(my_outputs, targets, logit=True):
     """Cross entropy loss or negative log likelihood, automatically chosen based on the hard/soft label."""
+    # logit: True when my_outputs is predicted probability
+    if logit:
+        my_outputs = torch.log(my_outputs)
     if my_outputs.shape == targets.shape:
-        return nn.KLDivLoss(reduction='batchmean')(torch.log(my_outputs), targets)
+        return nn.KLDivLoss(reduction='batchmean')(my_outputs, targets)
     else:
-        return nn.NLLLoss()(torch.log(my_outputs), targets)
+        return nn.NLLLoss()(my_outputs, targets)
 
 
-def cal_an(m, n, loss, type='teacher'):
+def cal_an(y_true, yhat, loss):
     """Evaluate the utility loss."""
-    return loss(m.y[:n], m.target[:n]).item() if type == 'teacher' else loss(m.y[:n], m.true_target[:n].to(device)).item()
+    return loss(y_true, yhat).item()
 
 
-def run(train_loader, test_loader, model, criterion = CELoss, criterion2 = myCustomLoss, lr=0.001, num_epochs=100,
-        device='cpu', verbose=True):
+def run(train_loader, model, test_loader=None, criterion=CELoss, criterion2=zero_one_loss, lr=0.001, num_epochs=100,
+        device='cpu', scheduler=None, optimizer=None):
     """Model training procedure."""
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    logger.debug(f'Training start with Learning rate: {lr}; Epochs: {num_epochs}; Device: {device}.')
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr) if optimizer is None else optimizer
     # optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0, weight_decay=0)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10], gamma=0.5)
-    qtl = num_epochs // 10
+    scheduler = scheduler
+    # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10], gamma=0.5)
+    model.to(device)
+    qtl = max(num_epochs // 10, 1)
     for epoch in range(1, num_epochs + 1):
         train_loss = train(model, train_loader, criterion, optimizer, device=device)
-        test_loss = test(model, test_loader, criterion2, device=device)
-        scheduler.step()
-        if (epoch % qtl == 0) & verbose:
-            print('Train({})[{:.0f}%]: Loss: {:.4f}; Test error:{:.4f}'.format(
+        test_loss = test(model, test_loader, criterion2, device=device) if test_loader is not None else np.nan
+        if scheduler:
+            scheduler.step()
+        if epoch % qtl == 0:
+            logger.debug('Train({})[{:.0f}%]: Loss: {:.4f}; Test error:{:.4f}'.format(
                 epoch, 100. * epoch / num_epochs, train_loss, test_loss))
 
     return train_loss, test_loss, model
@@ -168,130 +181,12 @@ def teacherMSELoss(my_outputs, targets):
 #     return nn.MSELoss()(my_outputs, targets.to(torch.double))
 
 
-# The data is converted to range [0, 1], and select categories 1 and 7 only.
-# Change data path accordingly!
+def recode(x):
+    """Turn MNIST to a binary classification task by choosing label 1 and 7."""
+    return 1 if x == 7 else 0
+    # return x
+
+
 if __name__ == '__main__':
-    transform = torchvision.transforms.ToTensor()
-    mnist_trainset0 = datasets.MNIST(root='./data', train=True, download=False, transform=transform)
-    idx = torch.logical_or(mnist_trainset0.targets==1, mnist_trainset0.targets==7)
-    mnist_trainset0.data = mnist_trainset0.data[idx]
-    mnist_trainset0.targets = (mnist_trainset0.targets[idx]).apply_(recode)
+    pass
 
-    mnist_testset = datasets.MNIST(root='./data', train=False, download=False, transform=transform)
-    idx = torch.logical_or(mnist_testset.targets==1, mnist_testset.targets==7)
-    mnist_testset.data = mnist_testset.data[idx]
-    mnist_testset.targets = (mnist_testset.targets[idx]).apply_(recode)
-
-    batch_size = 128
-
-    torch.set_default_dtype(torch.float64)
-    device = 'cpu'
-    nrep = 1
-    res_nn = []
-    ans = np.zeros(nrep)
-    methods = ['W/O', 'RN', 'DP', 'AM', 'Our']
-    emp = 1000
-    ntest = 1000
-    # Compare some defense mechanisms
-    for i in range(nrep):
-        # Split training and test
-        mnist_trainset, valid = torch.utils.data.random_split(mnist_trainset0, (5000, 8007))
-        trainloader = torch.utils.data.DataLoader(mnist_trainset, batch_size=batch_size, shuffle=True)
-        testloader = torch.utils.data.DataLoader(mnist_testset, batch_size=batch_size, shuffle=True)
-
-        # Teacher model
-        train_loss, test_loss, teacher = run(trainloader, testloader, LeNet5(1).to(device),
-                                             criterion=teacherMSELoss, num_epochs=50,
-                                             verbose=False)
-
-        df = {method: defaultdict(list) for method in methods}
-        df['Teacher'] = {'MSE': test(teacher, testloader, teacherMSELoss), '01': test(teacher, testloader, myCustomLoss)}
-        n = 100
-
-        # Query data
-        valid2 = torch.utils.data.Subset(mnist_trainset0, valid.indices[:3000])
-        validloader = torch.utils.data.DataLoader(valid2, batch_size=batch_size, shuffle=True)
-        mt = Defense(testloader, teacher, device=device, add=False)
-        ttloader = torch.utils.data.DataLoader(SimData(mt.data, mt.target),
-                                               batch_size=batch_size, shuffle=True)
-
-        m = Defense(validloader, teacher, device=device, add=False)
-        trainloader = m.sample(n)
-
-        data = m.data
-        target = m.target
-        training_data = data[:n]
-        training_target = target[:n]
-
-        net = LeNet5(1)
-        grad_list = []
-        for idx in range(n):
-            val = net(training_data[idx][None, :])
-            grad_list.append(torch.autograd.grad(val, net.parameters(), create_graph=True))
-        ker = gram(grad_list)
-
-        emp_grad_list = []
-        for idx in range(emp):
-            val = net(torch.Tensor(data[n+idx][None, :]))
-            emp_grad_list.append(torch.autograd.grad(val, net.parameters(), create_graph=True))
-
-        emp_ker = gram(grad_list, emp_grad_list)
-        alpha = 0.0
-        ik = pinv(ker+alpha*np.identity(n))
-        eker = emp_ker @ emp_ker.T / emp
-        mker = ik.T @ eker @ ik
-        ey = emp_ker @ target[n:n+emp].numpy() / emp
-        u = training_target.numpy() @ mker - ik @ ey
-
-        new_grad_list = []
-        for _ in range(ntest):
-            val = net(torch.Tensor(mt.data[_]))
-            new_grad_list.append(torch.autograd.grad(val, net.parameters(), create_graph=True))
-
-        pred_ker = gram(grad_list, new_grad_list)
-
-        # No noise
-        pred_nn = training_target@ik@pred_ker
-        df['W/O']['CE_an_teacher'].append(cal_an(m, n, nn.MSELoss()))
-        df['W/O']['01_an_teacher'].append(cal_an(m, n, myCustomLoss))
-        df['W/O']['CE_an_origin'].append(cal_an(mt, n, teacherMSELoss, 'origin'))
-        df['W/O']['01_an_origin'].append(cal_an(mt, n, myCustomLoss, 'origin'))
-        df['W/O']['CE_bn_origin'].append(teacherMSELoss(pred_nn, mt.true_target[:ntest]).item())
-        df['W/O']['01_bn_origin'].append(myCustomLoss(pred_nn, mt.true_target[:ntest]).item())
-        df['W/O']['CE_bn_teacher'].append(nn.MSELoss()(pred_nn, mt.target[:ntest]).item())
-        df['W/O']['01_bn_teacher'].append(myCustomLoss(pred_nn, mt.target[:ntest]).item())
-
-        # Random Gaussian noise
-        sigma = 0.4
-        training_noise_target = training_target+torch.normal(0, sigma, size=training_target.shape, device=device)
-        an = nn.MSELoss()(training_noise_target, training_target).item()
-        ans[i] = an
-        pred_nn = training_noise_target @ ik @ pred_ker
-        method = 'RN'
-        df[method] = defaultdict(list)
-        df[method]['CE_an_teacher'].append(an)
-        df[method]['01_an_teacher'].append(myCustomLoss(training_noise_target, m.target[:n]).item())
-        df[method]['CE_an_origin'].append(teacherMSELoss(training_noise_target, m.true_target[:n]).item())
-        df[method]['01_an_origin'].append(myCustomLoss(training_noise_target, m.true_target[:n]).item())
-        df[method]['CE_bn_origin'].append(teacherMSELoss(pred_nn, mt.true_target[:ntest]).item())
-        df[method]['01_bn_origin'].append(myCustomLoss(pred_nn, mt.true_target[:ntest]).item())
-        df[method]['CE_bn_teacher'].append(nn.MSELoss()(pred_nn, mt.target[:ntest]).item())
-        df[method]['01_bn_teacher'].append(myCustomLoss(pred_nn, mt.target[:ntest]).item())
-
-        # Proposed best perturbation
-        e = sol(mker, 2 * u)
-        e = np.sqrt(n * an) * e / norm(e)
-        training_noise_target = training_target + torch.Tensor(e)
-        pred_nn = training_noise_target @ ik @ pred_ker
-        method = 'Our'
-        df[method] = defaultdict(list)
-        df[method]['CE_an_teacher'].append(an)
-        df[method]['01_an_teacher'].append(myCustomLoss(training_noise_target, m.target[:n]).item())
-        df[method]['CE_an_origin'].append(teacherMSELoss(training_noise_target, m.true_target[:n]).item())
-        df[method]['01_an_origin'].append(myCustomLoss(training_noise_target, m.true_target[:n]).item())
-        df[method]['CE_bn_origin'].append(teacherMSELoss(pred_nn, mt.true_target[:ntest]).item())
-        df[method]['01_bn_origin'].append(myCustomLoss(pred_nn, mt.true_target[:ntest]).item())
-        df[method]['CE_bn_teacher'].append(nn.MSELoss()(pred_nn, mt.target[:ntest]).item())
-        df[method]['01_bn_teacher'].append(myCustomLoss(pred_nn, mt.target[:ntest]).item())
-
-        res_nn.append(df)

@@ -6,23 +6,11 @@ import torch
 from abc import ABC, abstractmethod
 from colorednoise import powerlaw_psd_gaussian
 from sklearn.metrics.pairwise import pairwise_kernels
+from sklearn.preprocessing import normalize
 from numpy.linalg import norm, pinv
 import logging
 from .attack import get_query
 logger = logging.getLogger(__name__)
-
-
-class SimData(torch.utils.data.Dataset):
-    """Torch dataset for data loader."""
-    def __init__(self, X, y):
-        self.X = X
-        self.y = y
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        return self.X[idx, :], self.y[idx]
 
 
 class Defense(ABC):
@@ -119,7 +107,7 @@ class Defense(ABC):
 #         return torch.clip(y, tol, 1-tol)
 
 
-class DefenseClassfication(Defense):
+class DefenseClassification(Defense):
     """Base defense class for classification task.
 
     Parameters
@@ -136,7 +124,7 @@ class DefenseClassfication(Defense):
         super().__init__(*args, **kwargs)
 
     def respond(self, x, y):
-        self._scale(self._clip(self.add_noise(x, y), self.tol))
+        return self._scale(self._clip(self.add_noise(x, y), self.tol))
 
     @abstractmethod
     def add_noise(self, x, y,):
@@ -145,7 +133,7 @@ class DefenseClassfication(Defense):
     @staticmethod
     def _scale(y):
         """Rescale a vector such that each instance sums to one."""
-        return (y.T/y.sum(dim=1)).T if len(y.shape) > 1 else y
+        return (y.T/y.sum(axis=1)).T if len(y.shape) > 1 else y
 
     @staticmethod
     def _clip(y, tol):
@@ -183,7 +171,7 @@ class DefenseRegression(Defense):
         return np.clip(y, lb, ub)
 
 
-class RandomNoiseClf(DefenseClassfication):
+class RandomNoiseClf(DefenseClassification):
     """Add random Gaussian noise.
 
     Parameters
@@ -223,15 +211,16 @@ class LongRangeNoise(DefenseRegression):
     sigma : float
         Variance of the Gaussian distribution.
     """
-    def __init__(self, sigma=0.1, gamma=0.5, *args, **kwargs):
+    def __init__(self, sigma=0.1, gamma=0.5, sort=True, *args, **kwargs):
         self.sigma = sigma
         self.gamma = gamma
+        self.sort = sort
         super().__init__(*args, **kwargs)
 
     def add_noise(self, x, y):
         # TODO: generate correlated noise for sequential query.
         noise = powerlaw_psd_gaussian(1-self.gamma, y.shape) if y.shape != (1,) else np.random.normal(0, 1, size=y.shape)
-        if len(x.shape) == 1:
+        if len(x.shape) == 1 and self.sort:
             noise = noise[np.argsort(x)]  # sort noise by values of x
         return y + noise*self.sigma
 
@@ -244,7 +233,7 @@ class Truth(Defense):
         return y
 
 
-class DeceptiveNoise(DefenseClassfication):
+class DeceptiveNoise(DefenseClassification):
     """Add deceptive noise.
 
     Parameters
@@ -267,7 +256,7 @@ class DeceptiveNoise(DefenseClassfication):
         return y-self.beta*self._r(y, self.gamma)
 
 
-class AdaptiveNoise(DefenseClassfication):
+class AdaptiveNoise(DefenseClassification):
     """Add adaptive noise.
 
     Parameters
@@ -287,7 +276,7 @@ class AdaptiveNoise(DefenseClassfication):
         super().__init__(*args, **kwargs)
 
     def add_noise(self, x, y):
-        mis_target = self.mis_model(x.to(self.device)).detach().numpy()  # Outcomes of the wrong model
+        mis_target = self.mis_model(x.to(self.device)).detach().cpu().numpy()  # Outcomes of the wrong model
         excess = y.max(axis=1) - self.tau
         alpha = sigmoid(excess * self.nu)
         return (1 - alpha)[:, None] * y + alpha[:, None] * mis_target
@@ -304,7 +293,7 @@ def get_activation(name):
     return hook
 
 
-class Overfit(DefenseClassfication):
+class Overfit(DefenseClassification):
     """Add higher order polynomial noise for NN."""
     def __init__(self, teacher, epsilon=1, device='cpu', *args, **kwargs):
         self.teacher = teacher
@@ -325,27 +314,6 @@ class Overfit(DefenseClassfication):
         tmp = activation['last']
         logits = activation['logits'] + torch.pow(tmp, 3) @ dsg_matrix
         return F.softmax(logits, dim=1)
-
-
-def sol(m, u):
-    """Solve the best perturbation direction."""
-    def obj(x):
-        """Objective function"""
-        return -x @ m @ x - u @ x
-
-    def jac(x):
-        """Jacobian of the objective"""
-        return -2 * m @ x - u
-
-    def con1(x):
-        """Constraint"""
-        return x @ x - 1
-
-    cons = [{'type': 'eq', 'fun': con1}]
-    x0 = eigh(m)[1][:, 0]  # initial guess
-    solution = minimize(obj, x0, jac=jac, constraints=cons)
-    x = solution.x
-    return x
 
 
 class KRRNoise(DefenseRegression):
@@ -369,9 +337,47 @@ class KRRNoise(DefenseRegression):
         eker = pred_ker @ pred_ker.T / emp
         m = ik.T @ eker @ ik
         u = y @ m - ik @ ey
-        e = sol(m, 2 * u)
+        e = self.sol(m, 2 * u)
         e = e / norm(e)
         return y + e * self.sigma * np.sqrt(n)
+
+    @staticmethod
+    def sol(m, u):
+        """Solve the best perturbation direction."""
+        def obj(x):
+            """Objective function"""
+            return -x @ m @ x - u @ x
+
+        def jac(x):
+            """Jacobian of the objective"""
+            return -2 * m @ x - u
+
+        def con1(x):
+            """Constraint"""
+            return x @ x - 1
+
+        cons = [{'type': 'eq', 'fun': con1}]
+        x0 = eigh(m)[1][:, -1]  # initial guess
+        solution = minimize(obj, x0, jac=jac, constraints=cons)
+        x = solution.x
+        return x
+
+
+class LRNoise(DefenseRegression):
+    def __init__(self, sigma=0.1, p=1, *args, **kwargs):
+        self.sigma = sigma
+        self.p = p
+        super().__init__(*args, **kwargs)
+
+    def add_noise(self, x, y):
+        n = len(y)
+        x = x.reshape(-1, 1) if len(x.shape) == 1 else x
+        X = np.hstack([x ** i for i in range(self.p)])
+        e1 = X[:, -1]
+        e2 = X @ (pinv(X.T @ X)[:, -1])
+        e1, e2 = normalize([e1, e2])
+        e = normalize([e1 + e2])
+        return y + e.ravel() * self.sigma * np.sqrt(n)
 
 
 def sigmoid(x):
@@ -379,10 +385,37 @@ def sigmoid(x):
     return 1 / (1 + np.exp(-x))
 
 
+def gram(grad_list, Y=None):
+    """Calculate the gram matrix from the neural network.
+    Parameters
+    ----------
+    grad_list : List
+        List of gradients for each layer.
+    Y : None or List
+        None then same as grad_list.
+
+    Returns
+    -------
+    numpy.ndarray
+    """
+    n = len(grad_list)
+    m = n if Y is None else len(Y)
+    gram = np.zeros((n, m))
+    for i in range(n):
+        u = grad_list[i]
+        for j in range(m):
+            if j < i and Y is None:
+                gram[i, j] = gram[j, i]
+            else:
+                v = Y[j] if Y else grad_list[j]
+                gram[i, j] = np.sum(list(map(lambda x: torch.sum(x[0]*x[1]).item(), zip(u, v))))
+    return gram
+
+
 def get_defense(method_name, *args, **kwargs):
     if method_name == 'None':
         defender = Truth(*args, **kwargs)
-    elif method_name == 'RandomNoiseClassficiation':
+    elif method_name == 'RandomNoiseClassification':
         defender = RandomNoiseClf(*args, **kwargs)
     elif method_name == 'RandomNoiseRegression':
         defender = RandomNoiseReg(*args, **kwargs)
@@ -390,6 +423,10 @@ def get_defense(method_name, *args, **kwargs):
         defender = LongRangeNoise(*args, **kwargs)
     elif method_name == 'KRR':
         defender = KRRNoise(*args, **kwargs)
+    elif method_name == 'LR':
+        defender = LRNoise(*args, **kwargs)
+    elif method_name == 'Deceptive':
+        defender = DeceptiveNoise(*args, **kwargs)
     else:
         raise ValueError("Invalid defender.")
     return defender
