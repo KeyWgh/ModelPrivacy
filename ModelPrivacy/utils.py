@@ -21,8 +21,8 @@ class Server:
 
 
 class Attacker:
-    def __init__(self, learning_algorithm='linear', query_strategy='IID', loss='MSE', *args
-                 , alg_kwargs=None, query_kwargs=None, add_data=None):
+    def __init__(self, learning_algorithm='linear', query_strategy='IID', loss='MSE', *args,
+                 alg_kwargs=None, query_kwargs=None, add_data=None):
         self.query = get_query(query_strategy, *args, **query_kwargs)
         self.algorithm = get_algorithm(learning_algorithm, *args, **alg_kwargs)
         self.data = None

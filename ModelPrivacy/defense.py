@@ -268,10 +268,10 @@ class AdaptiveNoise(DefenseClassification):
     nu : float
         Scale of noise.
     """
-    def __init__(self, mis_model, tau=0.8, nu=-1000, device='cpu', *args, **kwargs):
+    def __init__(self, mis_model=None, tau=0.8, nu=-1000, device='cpu', *args, **kwargs):
         self.tau = tau
         self.nu = nu
-        self.mis_model = mis_model
+        self.mis_model = mis_model.to(device)
         self.device = device
         super().__init__(*args, **kwargs)
 
@@ -427,6 +427,8 @@ def get_defense(method_name, *args, **kwargs):
         defender = LRNoise(*args, **kwargs)
     elif method_name == 'Deceptive':
         defender = DeceptiveNoise(*args, **kwargs)
+    elif method_name == 'AM':
+        defender = AdaptiveNoise(*args, **kwargs)
     else:
         raise ValueError("Invalid defender.")
     return defender

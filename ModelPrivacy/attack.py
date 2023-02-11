@@ -5,7 +5,7 @@ from sklearn.metrics import mean_squared_error
 from sklearn.linear_model import LinearRegression
 from sklearn.kernel_ridge import KernelRidge
 from scipy.special import legendre
-from torch.utils.data import Dataset, random_split, Subset
+from torch.utils.data import Dataset
 import logging
 from .nn import SimData, run
 logger = logging.getLogger(__name__)
