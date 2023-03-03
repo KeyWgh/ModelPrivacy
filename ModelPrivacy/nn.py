@@ -11,6 +11,11 @@ logger = logging.getLogger(__name__)
 class SimData(torch.utils.data.Dataset):
     """Torch dataset for data loader."""
     def __init__(self, X, y):
+        if isinstance(X, np.ndarray):
+            X = torch.from_numpy(X).float()
+        if isinstance(y, np.ndarray):
+            y = torch.from_numpy(y)
+
         self.X = X
         self.y = y
 
@@ -41,6 +46,22 @@ class LinearNeuralTangentKernel(nn.Linear):
         return 'in_features={}, out_features={}, bias={}, beta={}'.format(
             self.in_features, self.out_features, self.bias is not None, self.beta
         )
+
+
+class FCNTK(nn.Module):
+    """The neural network $f(x)=\sum a_i \sigma(w_i^Tx)$."""
+    def __init__(self, *dims):
+        super(FCNTK, self).__init__()
+        self.layers = nn.ModuleList(
+            [LinearNeuralTangentKernel(dims[i], dims[i + 1]) for i in range(len(dims) - 1)]
+        )
+
+    def forward(self, x):
+        for theta in self.layers:
+            x = theta(x)
+            if theta is not self.layers[-1]:
+                x = F.relu(x)
+        return x
 
 
 class LeNet5NTK(nn.Module):
@@ -91,6 +112,23 @@ class LeNet5(nn.Module):
         return probs
 
 
+class FC(nn.Module):
+    """The fully connected neural network"""
+
+    def __init__(self, *dims):
+        super(FC, self).__init__()
+        self.layers = nn.ModuleList(
+            [nn.Linear(dims[i], dims[i + 1]) for i in range(len(dims) - 1)]
+        )
+
+    def forward(self, x):
+        for theta in self.layers:
+            x = theta(x)
+            if theta is not self.layers[-1]:
+                x = F.relu(x)
+        return x
+
+
 def train(model, train_loader, criterion, optimizer, device):
     """Training for one epoch."""
     train_loss = 0
@@ -98,7 +136,7 @@ def train(model, train_loader, criterion, optimizer, device):
     for batch_idx, (data, target) in enumerate(train_loader):
         optimizer.zero_grad()  # Initialize grad
         output = model(data.to(device))  # feed model
-        loss = criterion(output, target.to(device))   # calculate loss
+        loss = criterion(output.squeeze(), target.to(device).squeeze())   # calculate loss
         loss.backward()  # back propagation
         optimizer.step()  # update parameters
         train_loss += loss.item()  # sum up training loss
@@ -112,7 +150,7 @@ def test(model, test_loader, criterion, device):
     with torch.no_grad():
         for data, target in test_loader:
             output = model(data.to(device))
-            test_loss += criterion(output, target.to(device)).item()  # sum up batch loss
+            test_loss += criterion(output.squeeze(), target.to(device).squeeze()).item()  # sum up batch loss
     test_loss = test_loss / len(test_loader)
     return test_loss
 
@@ -157,7 +195,7 @@ def run(train_loader, model, test_loader=None, criterion=CELoss, criterion2=zero
     """Model training procedure."""
     logger.debug(f'Training start with Learning rate: {lr}; Epochs: {num_epochs}; Device: {device}.')
     optimizer = torch.optim.Adam(model.parameters(), lr=lr) if optimizer is None else optimizer
-    # optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0, weight_decay=0)
+    # optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0, weight_decay=0)
     scheduler = scheduler
     # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10], gamma=0.5)
     model.to(device)
@@ -181,9 +219,9 @@ def teacherMSELoss(my_outputs, targets):
 #     return nn.MSELoss()(my_outputs, targets.to(torch.double))
 
 
-def recode(x):
+def recode(x, cat=1):
     """Turn MNIST to a binary classification task by choosing label 1 and 7."""
-    return 1 if x == 7 else 0
+    return 1 if x == cat else 0
     # return x
 
 

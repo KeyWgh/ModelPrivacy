@@ -13,9 +13,9 @@ class Server:
         self.defense = get_defense(defend_method, model=model, *args, **kwargs)
 
     def respond(self, x):
-        y = self.model(x)
+        y = self.model(x).squeeze()
         flag = True if isinstance(x, Tensor) else False
-        y = y.detach().numpy() if flag else y
+        y = y.detach().cpu().numpy() if flag else y
         yhat = self.defense.respond(x, y)
         return from_numpy(yhat).type(x.dtype) if flag else yhat
 
@@ -41,3 +41,8 @@ class Attacker:
 
     def evaluate(self, x, y):
         return self.loss_fn(y, self.algorithm.predict(x))
+
+
+def paste(x, y, decimal=2):
+    """Utility function to print `x (y)` with specified decimal digits."""
+    return f'{np.round(x, decimals=decimal)} ({np.round(y, decimals=decimal)})'

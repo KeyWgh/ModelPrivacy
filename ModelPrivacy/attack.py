@@ -4,6 +4,8 @@ import torch
 from sklearn.metrics import mean_squared_error
 from sklearn.linear_model import LinearRegression
 from sklearn.kernel_ridge import KernelRidge
+from sklearn.metrics.pairwise import pairwise_kernels
+from sklearn.linear_model._ridge import _solve_cholesky_kernel
 from scipy.special import legendre
 from torch.utils.data import Dataset
 import logging
@@ -109,7 +111,8 @@ class SampleQuery(BatchQuery):
 
     def gen_query(self, n):
         if isinstance(self.x, np.ndarray):
-            return np.random.choice(self.x, n)
+            idx = np.random.choice(len(self.x), n)
+            return self.x[idx, :] if len(self.x.shape) > 1 else self.x[idx]
         elif isinstance(self.x, Dataset):
             # return random_split(self.x, [n, len(self.x) - n,])[0]
             # return Subset(self.x, )
@@ -185,9 +188,65 @@ class LinearRegAIC(AbstractAlgorithm):
         return self.model.predict(X)
 
 
+class MyKernelRidge(KernelRidge):
+    def _get_kernel(self, X, Y=None):
+        if callable(self.kernel):
+            params = self.kernel_params or {}
+        else:
+            params = {"gamma": self.gamma,
+                      "degree": self.degree,
+                      "coef0": self.coef0}
+            params.update(self.kernel_params or {})
+        return pairwise_kernels(X, Y, metric=self.kernel,
+                                filter_params=True, **params)
+
+    def fit(self, X, y, sample_weight=None):
+        """Fit Kernel Ridge regression model
+
+        Parameters
+        ----------
+        X : {array-like, sparse matrix} of shape (n_samples, n_features)
+            Training data. If kernel == "precomputed" this is instead
+            a precomputed kernel matrix, of shape (n_samples, n_samples).
+
+        y : array-like of shape (n_samples,) or (n_samples, n_targets)
+            Target values
+
+        sample_weight : float or array-like of shape (n_samples,), default=None
+            Individual weights for each sample, ignored if None is passed.
+
+        Returns
+        -------
+        self : returns an instance of self.
+        """
+        # Convert data
+        X, y = self._validate_data(X, y, accept_sparse=("csr", "csc"),
+                                   multi_output=True, y_numeric=True)
+
+        K = self._get_kernel(X)
+        alpha = np.atleast_1d(self.alpha)
+
+        ravel = False
+        if len(y.shape) == 1:
+            y = y.reshape(-1, 1)
+            ravel = True
+
+        self.dual_coef_ = np.linalg.pinv(K + alpha * np.eye(K.shape[0]))@y
+        # self.dual_coef_ = _solve_cholesky_kernel(K, y, alpha,
+        #                                          sample_weight,
+        #                                          False)
+
+        if ravel:
+            self.dual_coef_ = self.dual_coef_.ravel()
+
+        self.X_fit_ = X
+
+        return self
+
+
 class KernelRidgeReg(AbstractAlgorithm):
     def __init__(self, *args, **kwargs):
-        self.model = KernelRidge(**kwargs)
+        self.model = MyKernelRidge(**kwargs)
         super().__init__(*args, **kwargs)
 
     def train(self, x, y):
@@ -213,10 +272,11 @@ class NNLeNet5(AbstractAlgorithm):
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, shuffle=True)
         scheduler = self.kwargs.get('scheduler', None)
         optimizer = self.kwargs.get('optimizer', None)
+        lr = self.kwargs.get('lr', 0.001)
         train_loss, test_loss, model = run(trainloader, self.model,
                                            criterion=self.train_loss, criterion2=self.train_loss,
                                            test_loader=None, num_epochs=self.num_epochs, device=self.device,
-                                           scheduler=scheduler, optimizer=optimizer)
+                                           scheduler=scheduler, optimizer=optimizer, lr=lr)
         self.model = model
 
     def predict(self, x):
