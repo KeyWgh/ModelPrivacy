@@ -14,7 +14,7 @@ class SimData(torch.utils.data.Dataset):
         if isinstance(X, np.ndarray):
             X = torch.from_numpy(X).float()
         if isinstance(y, np.ndarray):
-            y = torch.from_numpy(y)
+            y = torch.from_numpy(y).float()
 
         self.X = X
         self.y = y
@@ -129,7 +129,7 @@ class FC(nn.Module):
         return x
 
 
-def train(model, train_loader, criterion, optimizer, device):
+def train_old(model, train_loader, criterion, optimizer, device):
     """Training for one epoch."""
     train_loss = 0
     model.train(True)
@@ -155,6 +155,53 @@ def test(model, test_loader, criterion, device):
     return test_loss
 
 
+def train(classifier, train_loader, val_loader=None, verbose=False, criterion=nn.BCELoss(), num_epochs=10, device='cpu',
+          model_path='./', lr=1e-3):
+    # Training loop
+    best_val_loss = float('inf')
+    optimizer = torch.optim.Adam(classifier.parameters(), lr=lr)
+
+    for epoch in range(num_epochs):
+        classifier.train()
+        total_loss = 0
+        for embeddings, labels in train_loader:
+            optimizer.zero_grad()
+            predictions = classifier(embeddings.to(device))
+            if len(predictions.shape) > 1 and predictions.shape[1] == 1:
+                predictions = predictions.squeeze(1)
+            loss = criterion(predictions, labels.to(device))
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+
+        avg_train_loss = total_loss / len(train_loader)
+        if verbose:
+            logger.info(f"Epoch {epoch + 1}/{num_epochs}, Train loss: {avg_train_loss:.4f}")
+
+        if val_loader:
+            # Validation loop
+            val_loss = 0.0
+            classifier.eval()
+            with torch.no_grad():
+                for embeddings, labels in val_loader:
+                    predictions = classifier(embeddings.to(device))
+                    if len(predictions.shape) > 1 and predictions.shape[1] == 1:
+                        predictions = predictions.squeeze(1)
+                    loss = criterion(predictions, labels.to(device))
+                    val_loss += loss.item()
+
+            avg_val_loss = val_loss / len(val_loader)
+            if verbose:
+                logger.info(f"Epoch {epoch + 1}/{num_epochs}, Validation loss: {avg_val_loss:.4f}")
+
+            # Save the best model
+            if (avg_val_loss < best_val_loss) & (model_path is not None):
+                best_val_loss = avg_val_loss
+                torch.save(classifier.state_dict(), model_path)
+
+    return classifier
+
+
 def zero_one_loss_binary(my_outputs, my_labels, threshold=0.5):
     """Mis-classification error."""
     # Y should be a tensor of size (batch_size, 1)
@@ -169,9 +216,30 @@ def zero_one_loss_binary(my_outputs, my_labels, threshold=0.5):
 def zero_one_loss(my_outputs: torch.Tensor, my_labels: torch.Tensor):
     """Mis-classification error."""
     my_batch_size = my_outputs.size()[0]
-    my_outputs = my_outputs.argmax(dim=1)
+    my_outputs = my_outputs.argmax(dim=1) if my_outputs.ndim > 1 else my_outputs
     my_labels = my_labels.argmax(dim=1) if my_labels.ndim > 1 else my_labels
     return torch.sum(my_outputs != my_labels)/my_batch_size
+
+
+def ZeroOneLossBinary(my_outputs, my_labels, logit=False):
+    '''Misclassification error.
+
+    my_outputs: prob or logit
+    my_labels: prob
+    '''
+    # specifying the batch size
+    my_batch_size = my_outputs.size()[0]
+
+    my_outputs = torch.sigmoid(my_outputs) if logit else my_outputs
+
+    if my_outputs.dim() == 2:
+        my_outputs = torch.argmax(my_outputs, dim=1)
+    if my_labels.dim() == 2:
+        my_labels = torch.argmax(my_labels, dim=1)
+    # returning the results
+    my_outputs = 1 * (my_outputs > 0.5)
+    my_labels = 1 * (my_labels > 0.5)
+    return torch.sum(my_outputs != my_labels) / my_batch_size
 
 
 def CELoss(my_outputs, targets, logit=True):
@@ -201,7 +269,7 @@ def run(train_loader, model, test_loader=None, criterion=CELoss, criterion2=zero
     model.to(device)
     qtl = max(num_epochs // 10, 1)
     for epoch in range(1, num_epochs + 1):
-        train_loss = train(model, train_loader, criterion, optimizer, device=device)
+        train_loss = train_old(model, train_loader, criterion, optimizer, device=device)
         test_loss = test(model, test_loader, criterion2, device=device) if test_loader is not None else np.nan
         if scheduler:
             scheduler.step()

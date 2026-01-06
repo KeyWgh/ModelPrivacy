@@ -85,10 +85,15 @@ class RandomQuery(BatchQuery):
         lb, ub = self.interval
         if self.type == 'unif':
             return np.random.uniform(lb, ub, size=(n,))
+            # return np.random.beta(2, 2, size=(n,))
         elif self.type == 'Gaussian':
             loc = self.kwargs.get('loc', 0)
             scale = self.kwargs.get('scale', 1)
             return np.clip(np.random.normal(loc, scale, size=(n,)), lb, ub)
+        elif self.type == 'Beta':
+            alpha = self.kwargs.get('alpha', 1)
+            beta = self.kwargs.get('beta', 2)
+            return np.random.beta(alpha, beta, size=(n,))
         else:
             raise ValueError("Invalid query type.")
 
@@ -153,38 +158,53 @@ class AbstractAlgorithm(ABC):
         """Abstract method to predict the model."""
 
 
-def model_selection(x, y, pmax, fit_intercept=True):
+def model_selection(x, y, pmax, fit_intercept=True, penalty='AIC'):
+    """Select the order of polynomial regression using AIC. The variance estimator is unbiased."""
     n = len(y)
     aics = np.zeros(pmax)
     for i in range(pmax):
         X = x[:, :i+1]
         lr = LinearRegression(fit_intercept=fit_intercept).fit(X, y)
         loss = mean_squared_error(lr.predict(X), y)
-        aics[i] = loss + 2*i*loss/(n-i-1)
+        if penalty == 'AIC':
+            aics[i] = loss + 2*i*loss/(n-i-1)
+        elif penalty == 'BIC':
+            aics[i] = loss + np.log(n)*i*loss/(n-i-1)
+        elif penalty == 'BC':
+            t = np.sum(1/np.array(range(1, i+1)))
+            aics[i] = np.log(loss)+2*t*pmax/n
+        else:
+            raise Warning('Unsupported criterion')
+
+        # aics[i] = np.log(loss)+2*(i+1)/n
         logger.debug(f'Order {i}, Error {aics[i]}, Loss {loss}')
     return np.argmin(aics)
 
 
 class LinearRegAIC(AbstractAlgorithm):
-    def __init__(self, pmax=5, *args, **kwargs):
+    def __init__(self, pmax=5, penalty='AIC', *args, **kwargs):
         self.pmax = pmax
         self.order = None
         self.fit_intercept = kwargs.get('fit_intercept', True)
         self.model = LinearRegression(fit_intercept=self.fit_intercept)
+        self.penalty = penalty
         super().__init__(*args, **kwargs)
 
     def train(self, x, y):
         x = x.reshape(-1, 1) if len(x.shape) == 1 else x
-        basis = [legendre(i) for i in range(self.pmax)]
-        X = np.hstack([basis[i](x) for i in range(self.pmax)])
-        p = model_selection(X, y, self.pmax, fit_intercept=self.fit_intercept)
+        # basis = [legendre(i) for i in range(self.pmax)]
+        # X = np.hstack([basis[i](x) for i in range(self.pmax)])
+        X = np.hstack([np.power(x, i) for i in range(self.pmax)])
+        p = model_selection(X, y, self.pmax, fit_intercept=self.fit_intercept, penalty=self.penalty)
+        logger.info(f'Order {p} selected (highest order {self.pmax-1}).')
         self.order = p
         self.model.fit(X[:, :p+1], y)
 
     def predict(self, x):
         x = x.reshape(-1, 1) if len(x.shape) == 1 else x
-        basis = [legendre(i) for i in range(self.order+1)]
-        X = np.hstack([basis[i](x) for i in range(self.order+1)])
+        # basis = [legendre(i) for i in range(self.order+1)]
+        # X = np.hstack([basis[i](x) for i in range(self.order+1)])
+        X = np.hstack([np.power(x, i) for i in range(self.order+1)])
         return self.model.predict(X)
 
 
@@ -268,6 +288,7 @@ class NNLeNet5(AbstractAlgorithm):
         super().__init__(*args, **kwargs)
 
     def train(self, x, y):
+        x = x.reshape(-1, 1) if len(x.shape) == 1 else x
         trainset = SimData(x, y)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, shuffle=True)
         scheduler = self.kwargs.get('scheduler', None)
@@ -280,6 +301,8 @@ class NNLeNet5(AbstractAlgorithm):
         self.model = model
 
     def predict(self, x):
+        x = x.reshape(-1, 1) if len(x.shape) == 1 else x
+        x = torch.from_numpy(x).float() if type(x) is np.ndarray else x
         return self.model(x.to(self.device)).detach().cpu()
 
 

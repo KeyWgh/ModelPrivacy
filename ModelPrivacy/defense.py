@@ -7,11 +7,39 @@ import torch
 from abc import ABC, abstractmethod
 from colorednoise import powerlaw_psd_gaussian
 from sklearn.metrics.pairwise import pairwise_kernels
+from sklearn.metrics.pairwise import PAIRWISE_KERNEL_FUNCTIONS, KERNEL_PARAMS
 from sklearn.preprocessing import normalize
+# from sklearn.linear_model import RidgeCV, LassoCV
 from numpy.linalg import norm, pinv
 import logging
 from .attack import get_query
 logger = logging.getLogger(__name__)
+
+
+def empirical_ntk_jacobian_contraction(fnet_single, params, x1, x2):
+    # Compute J(x1)
+    jac1 = vmap(jacrev(fnet_single), (None, 0))(params, x1)
+    jac1 = [j.flatten(2) for j in jac1]
+
+    # Compute J(x2)
+    jac2 = vmap(jacrev(fnet_single), (None, 0))(params, x2)
+    jac2 = [j.flatten(2) for j in jac2]
+
+    # Compute J(x1) @ J(x2).T
+    result = torch.stack([torch.einsum('Naf,Mbf->NMab', j1, j2) for j1, j2 in zip(jac1, jac2)])
+    result = result.sum(0)
+    return result
+
+
+def ntk_kernel(x, y, fnet_single=None, params=None):
+    x = torch.from_numpy(x).to(torch.float)
+    y = torch.from_numpy(y).to(torch.float)
+    res = empirical_ntk_jacobian_contraction(fnet_single, params, x, y).squeeze()
+    return res.detach().numpy()
+
+
+KERNEL_PARAMS['ntk'] = ('fnet_single', 'params')
+PAIRWISE_KERNEL_FUNCTIONS['ntk'] = ntk_kernel
 
 
 class Defense(ABC):
@@ -136,12 +164,15 @@ class LongRangeNoise(DefenseRegression):
     def __init__(self, sigma=0.1, gamma=0.5, sort=True, *args, **kwargs):
         self.sigma = sigma
         self.gamma = gamma
+        self.k = 1
         self.sort = sort
         super().__init__(*args, **kwargs)
 
     def add_noise(self, x, y):
         # TODO: generate correlated noise for sequential query.
-        noise = powerlaw_psd_gaussian(1-self.gamma, y.shape) if y.shape != (1,) else np.random.normal(0, 1, size=y.shape)
+        n = len(y)
+        gamma = 1/np.power(n, self.k) if self.gamma is None else self.gamma
+        noise = powerlaw_psd_gaussian(1-gamma, y.shape) if y.shape != (1,) else np.random.normal(0, 1, size=y.shape)
         if len(x.shape) == 1 and self.sort:
             noise = noise[np.argsort(x)]  # sort noise by values of x
         return y + noise*self.sigma
@@ -353,7 +384,7 @@ class KRRNoise(DefenseRegression):
         x = x.reshape(-1, 1) if len(x.shape) == 1 else x
         # emp = self.emp
         ker = pairwise_kernels(x, metric=self.kwargs['kernel'], **self.kwargs['kernel_params'])
-        ik = pinv(ker + self.kwargs['alpha'] * np.identity(n))
+        ik = pinv(ker + n * self.kwargs['alpha'] * np.identity(n))
         pred_ker = pairwise_kernels(x, self.newx, metric=self.kwargs['kernel'], **self.kwargs['kernel_params'])
         yhat = self.model(self.newx).squeeze()
         if isinstance(yhat, torch.Tensor):
